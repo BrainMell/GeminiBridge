@@ -1,0 +1,17 @@
+# Build outputs
+bin/
+obj/
+
+# Playwright browser state and cookies
+PlaywrightProfile/
+screenshot.png
+
+# Log files
+*.log
+
+# IDE files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo

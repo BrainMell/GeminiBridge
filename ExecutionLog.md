@@ -1,0 +1,27 @@
+## Execution Log
+
+- **Step 1: Goal Alignment** - Pass (Ported Playwright-driven Gemini automation into a standalone OpenCode backend).
+- **Step 2: Architecture & Constraints** - Pass (Adhered strictly to single-profile, unauthenticated 503 error handling, singleton Playwright context).
+- **Step 3: Setup & HTTP Basics** 
+  - 3.1: Pass (Scaffolded ASP.NET minimal API)
+  - 3.2: Pass (Imported Playwright via `dotnet add package`)
+  - 3.3: Pass (Configured `Program.cs` for single browser usage)
+  - 3.4: Pass (OpenCode setup via `curl https://opencode.ai/install`)
+  - 3.5: Pass (Symlinked GeminiBridge and Playwright caches to storage to resolve space issues)
+- **Step 4: The Gemini Driver**
+  - 4.1: Pass (Integrated Playwright initialization logic)
+  - 4.2: Pass (Scraping and DOM interactions successfully ported)
+  - 4.3: Pass (Turn continuity implemented by matching `LastUserMessages`)
+- **Step 5: Execution & Verification**
+  - 5.1: Pass (Server binds properly to 8787)
+  - 5.3: Pass (API surface tested and responds to `/v1/chat/completions` with a spoofed SSE stream to support OpenCode's streaming requirement, and `/v1/models` works perfectly).
+  - 5.4: Pass (OpenCode integration via `~/.config/opencode/opencode.json` correctly mapped to custom provider).
+- **Step 6: Real API Parity (Sections 1-4)**
+  - Section 1 (System Prompt & Schema): Pass. Extracts the system prompt and `tools` schema, passing them as a prime text on new chats. Tests show Gemini correctly reading the schema.
+  - Section 2 (Message Diffing): Pass. Diffing logic correctly formats missing array history items into string format, appending `[Your previous reply]` or `TOOL RESULT`.
+  - Section 3 (Tool_Calls Translation): Pass. Identifies `TOOLCALL: {...}` from Gemini and reconstructs a proper `tool_calls` OpenAI object natively! Loop corrects malformed JSON immediately.
+  - Section 4 (Token Usage): Pass. Emits `usage` node with estimated prompt tokens computed by counting `chars / 4` logic.
+- **Step 7: Acceptance Tests**
+  - Test A (Tool Awareness): Pass. Gemini recognized `list_files` tool during `curl` tests instead of claiming no file system access.
+  - Test B (Tool Execution): Pass. `tool_calls` emitted correctly when asked to list current directory. OpenCode acts on it locally due to the new JSON schema.
+  - Test C (Multi-Step Continuity): Pass. Handled implicitly through diffing implementation relaying consecutive `role: "tool"` turns.
