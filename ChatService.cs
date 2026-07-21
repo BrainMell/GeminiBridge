@@ -2,6 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using System.IO;
+using System.Text.Json;
 using Microsoft.Playwright;
 using System.Runtime.Loader;
 using System.Collections.Generic;
@@ -427,11 +428,9 @@ public class ChatService : IDisposable
         if (!keepSession || !_page.Url.StartsWith("https://gemini.google.com/app"))
         {
             await _page.GotoAsync(_Gemini);
-            // Wait for page elements to load
             await _page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
         }
 
-        // Check if we are signed out (if either of the Sign In buttons are present)
         bool isSignedOut = await _page.Locator("[data-test-id=\"sign-in-button\"]").CountAsync() > 0
                         || await _page.Locator("[data-test-id=\"mavatar-sign-in-icon-button\"]").CountAsync() > 0;
 
@@ -439,7 +438,6 @@ public class ChatService : IDisposable
         {
             await _context.CloseAsync();
             _playwright.Dispose();
-
             _playwright = null!;
             _context    = null!;
             _page       = null!;
@@ -453,18 +451,15 @@ public class ChatService : IDisposable
                     foreach (string file in Directory.GetFiles(fullPath)) File.Delete(file);
                     foreach (string subDir in Directory.GetDirectories(fullPath)) Directory.Delete(subDir, true);
                 }
-                catch { /* ignore lock errors */ }
+                catch { }
             }
-
             return "LoginRequired: Session expired or not signed in. Please log in again in the opened browser window and restart.";
         }
 
         if (string.IsNullOrEmpty(message))
-        {
             return "Error: Message cannot be empty for Gemini.";
-        }
 
-        // Locate the prompt text box (try several semantic options to ensure stability)
+        // Locate the prompt text box
         ILocator textBox = _page.GetByRole(AriaRole.Textbox, new() { Name = "Prompt", Exact = false });
         if (await textBox.CountAsync() == 0)
             textBox = _page.GetByRole(AriaRole.Textbox, new() { Name = "Message", Exact = false });
@@ -473,105 +468,110 @@ public class ChatService : IDisposable
         if (await textBox.CountAsync() == 0)
             textBox = _page.GetByRole(AriaRole.Textbox);
 
+        // Set up response interception BEFORE clicking send
+        var responseTask = _page.WaitForResponseAsync(resp =>
+            resp.Url.Contains("StreamGenerate") && resp.Status == 200,
+            new PageWaitForResponseOptions { Timeout = 120000 });
+
+        // Type and send
         await textBox.First.ClickAsync();
         await textBox.First.FillAsync(message);
 
-        // Count existing response containers BEFORE sending so we can
-        // identify which one is new after the message is sent
-        var responseLocator = _page.Locator("message-content");
-        bool useMessageContent = await responseLocator.CountAsync() > 0;
-        if (!useMessageContent)
-        {
-            responseLocator = _page.Locator(".container"); // fallback to class only if message-content tag is missing
-        }
-        var responseCount = await responseLocator.CountAsync();
-
-        // Locate the send button
         ILocator textButton = _page.GetByRole(AriaRole.Button, new() { Name = "Send message", Exact = false });
         if (await textButton.CountAsync() == 0)
             textButton = _page.GetByRole(AriaRole.Button, new() { Name = "Send", Exact = false });
         if (await textButton.CountAsync() == 0)
             textButton = _page.Locator("button[aria-label*='Send' i]");
 
-        await textButton.First.ClickAsync();
+        if (await textButton.CountAsync() > 0)
+            await textButton.First.ClickAsync();
+        else
+            await textBox.First.PressAsync("Enter");
 
-        // Wait for the new response container to appear in the DOM
-        var latestResponseLocator = responseLocator.Nth(responseCount);
-        await latestResponseLocator.WaitForAsync(new() { State = WaitForSelectorState.Attached, Timeout = 120000 });
-
-        // Explicitly wait for some initial text to start streaming to avoid premature empty reads
-        string containerText = "";
-        var startDeadline = DateTime.UtcNow.AddSeconds(240); // Allow up to 4 minutes for deep thinking
-        while (DateTime.UtcNow < startDeadline && !_cts.Token.IsCancellationRequested)
+        // Wait for the StreamGenerate response
+        IResponse streamResp;
+        try
         {
-            // Check for browser active connection
-            try
-            {
-                if (_page.IsClosed || (_page.Context.Browser != null && !_page.Context.Browser.IsConnected))
-                {
-                    throw new Exception("Browser connection was closed.");
-                }
-            }
-            catch (Exception ex) when (!(ex is OperationCanceledException))
-            {
-                // Abort immediately on browser crash
-                throw new Exception("Connection error while waiting for response: " + ex.Message);
-            }
-
-            containerText = await latestResponseLocator.TextContentAsync() ?? "";
-            if (!string.IsNullOrEmpty(containerText.Trim()))
-            {
-                break;
-            }
-            try
-            {
-                await Task.Delay(500, _cts.Token); // Check twice per second
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
+            streamResp = await responseTask;
+        }
+        catch (TimeoutException)
+        {
+            return "Error: Gemini did not respond within 120 seconds.";
         }
 
-        // Poll until the response text stabilizes (Gemini streams its output).
-        // Hard timeout of 240 seconds to prevent hanging forever.
-        // Also respects _cts so Dispose() unblocks this loop immediately.
-        string previousText  = "";
-        int stabilityCounter = 0;
-        var deadline = DateTime.UtcNow.AddSeconds(240);
+        string rawBody = await streamResp.TextAsync();
 
-        while (DateTime.UtcNow < deadline && !_cts.Token.IsCancellationRequested)
+        // Parse the NDJSON response format:
+        // )]}'\n\n<length>\n[wrb.fr,null,"<inner JSON>"]\n<length>\n["di",...]\n...
+        // The inner JSON contains the answer at path: data[4][0][1][0]
+        string answer = "";
+        var lines = rawBody.Split('\n');
+        int idx = 0;
+        while (idx < lines.Length && lines[idx].Trim() == ")]}'") idx++;
+
+        while (idx < lines.Length)
         {
-            try
+            if (string.IsNullOrWhiteSpace(lines[idx])) { idx++; continue; }
+            if (int.TryParse(lines[idx].Trim(), out _))
             {
-                await Task.Delay(500, _cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                break; // Dispose was called — exit immediately
-            }
-
-            containerText = await latestResponseLocator.TextContentAsync() ?? "";
-            containerText = containerText.Trim();
-
-            if (!string.IsNullOrEmpty(containerText) && containerText == previousText)
-            {
-                stabilityCounter++;
-                if (stabilityCounter >= 3) break; // stable for 1.5 seconds — done
+                idx++;
+                if (idx < lines.Length)
+                {
+                    var jsonLine = lines[idx].Trim();
+                    if (jsonLine.StartsWith("[["))
+                    {
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(jsonLine);
+                            var root = doc.RootElement;
+                            if (root.ValueKind == JsonValueKind.Array && root.GetArrayLength() >= 1)
+                            {
+                                var entry = root[0];
+                                if (entry.ValueKind == JsonValueKind.Array && entry.GetArrayLength() >= 3)
+                                {
+                                    var innerStr = entry[2].GetString();
+                                    if (!string.IsNullOrEmpty(innerStr))
+                                    {
+                                        using var innerDoc = JsonDocument.Parse(innerStr);
+                                        var data = innerDoc.RootElement;
+                                        if (data.ValueKind == JsonValueKind.Array && data.GetArrayLength() > 4)
+                                        {
+                                            var arr4 = data[4];
+                                            if (arr4.ValueKind == JsonValueKind.Array && arr4.GetArrayLength() > 0)
+                                            {
+                                                var respEntry = arr4[0];
+                                                if (respEntry.ValueKind == JsonValueKind.Array && respEntry.GetArrayLength() > 1)
+                                                {
+                                                    var textArr = respEntry[1];
+                                                    if (textArr.ValueKind == JsonValueKind.Array && textArr.GetArrayLength() > 0)
+                                                    {
+                                                        var text = textArr[0];
+                                                        if (text.ValueKind == JsonValueKind.String)
+                                                        {
+                                                            string candidate = text.GetString() ?? "";
+                                                            if (!string.IsNullOrEmpty(candidate))
+                                                                answer = candidate;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    idx++;
+                }
             }
             else
             {
-                previousText     = containerText;
-                stabilityCounter = 0; // still changing — keep waiting
+                idx++;
             }
         }
 
-        if (string.IsNullOrEmpty(containerText))
-        {
-            return "Error: Gemini did not respond within 90 seconds. Please try again.";
-        }
-
-        return containerText;
+        return string.IsNullOrEmpty(answer) ? "Error: Could not extract response from Gemini." : answer;
     }
 
     public bool IsSessionHealthy()

@@ -11,6 +11,7 @@ using Microsoft.Extensions.DependencyInjection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Playwright;
 using GeminiBridge;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -26,6 +27,7 @@ bool isBrandNew = Directory.GetFileSystemEntries(fullPath).Length == 0;
 bool runHeadless = !isBrandNew;
 
 await chatService.InitializePlaywrightAsync(runHeadless);
+
 string loginStatus = await chatService.CheckIfLoggedInAsync(isBrandNew);
 
 if (loginStatus.StartsWith("LoginRequired"))
@@ -34,8 +36,9 @@ if (loginStatus.StartsWith("LoginRequired"))
 }
 else
 {
-    Console.WriteLine("Authentication successful. Starting GeminiBridge HTTP server...");
+    Console.WriteLine("Authentication successful.");
 }
+
 
 app.MapGet("/healthz", () => Results.Json(new { authenticated = true }));
 
