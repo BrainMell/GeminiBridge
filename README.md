@@ -1,47 +1,145 @@
 # GeminiBridge
 
-An OpenAI-compatible standalone HTTP bridge that enables coding agents (like **OpenCode**) to use the official Google Gemini Web UI (via a Playwright automated browser context) as a model backend.
+An OpenAI-compatible HTTP bridge that lets any AI coding agent use **Google Gemini Web** (via a Playwright-automated browser) as a model backend. No API keys, no billing — just a Google account and a browser session.
 
-## Features
+## How it works
 
-- **OpenAI Compatibility**: Exposes standard `/v1/chat/completions` and `/v1/models` HTTP endpoints.
-- **Dynamic Tool Translation**: Captures agent tool definitions (e.g. MCP tools schemas) and formats them into XML structures for Gemini, parsing back tool calls output by the model.
-- **Robust Parsing Fallbacks**: Automatically supports both the `TOOLCALL:` JSON format and natural browser-mimicked `[tool_call:name {json}]` formats, with automatic correction for unquoted JSON keys.
-- **Session Continuity**: Retains chat session URLs to maintain conversation history across subsequent API completions.
-- **Sequential Locking**: Employs semaphore-based request serialization to prevent concurrent write collisions on the single automated Playwright browser tab.
-- **Visual Debugging**: Diagnostic endpoints available to inspect the browser state:
-  - `GET /v1/debug/history` – Scrapes and dumps the current active chat session messages.
-  - `GET /v1/debug/screenshot` – Captures a PNG screenshot of the automated browser window.
+```
+Coding Agent (OpenCode, Claude Code, etc.)
+  → OpenAI SDK-compatible HTTP request
+  → GeminiBridge (localhost:8787)
+  → Playwright Chromium browser
+  → gemini.google.com web UI
+  → scraped response → back to agent
+```
 
-## Setup & Running
+## Setup
 
-1. **Restore and Build**:
-   ```bash
-   dotnet build
-   ```
+```bash
+dotnet build
+dotnet run
+```
 
-2. **First-Time Run (Authentication)**:
-   On the first run, the automated browser will launch in **headed** (visible) mode. Scan the console or complete the Google account login/CAPTCHA verification in the opened window.
-   ```bash
-   dotnet run
-   ```
-   Once authentication is successful, cookies are persisted to `PlaywrightProfile/` and future runs will default to **headless** (invisible) mode.
+First run opens a visible browser — sign into your Google account. After that it runs headless.
 
-3. **Integrate with OpenCode**:
-   Add a custom provider pointing to your local GeminiBridge instance in `opencode.json`:
-   ```json
-   {
-     "providers": {
-       "gemini-bridge": {
-         "type": "openai-compatible",
-         "baseURL": "http://127.0.0.1:8787/v1",
-         "apiKey": "noop"
-       }
-     },
-     "models": {
-       "gemini-web": {
-         "providerID": "gemini-bridge"
-       }
-     }
-   }
-   ```
+## Configuring agents
+
+All of these support custom OpenAI-compatible providers. Point them at `http://127.0.0.1:8787/v1` with any dummy API key.
+
+### OpenCode
+
+`~/.config/opencode/opencode.json`:
+```json
+{
+  "provider": {
+    "gemini-bridge": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Gemini (browser)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8787/v1",
+        "apiKey": "noop"
+      }
+    }
+  },
+  "model": "gemini-bridge/gemini-web"
+}
+```
+
+### Claude Code
+
+`~/.claude.json` or `claude.json` in project:
+```json
+{
+  "apiKey": "noop",
+  "model": "gemini-web",
+  "provider": {
+    "name": "gemini-bridge",
+    "apiBase": "http://127.0.0.1:8787/v1"
+  }
+}
+```
+
+### Continue (VS Code / JetBrains)
+
+`~/.continue/config.json`:
+```json
+{
+  "models": [{
+    "title": "Gemini (Browser)",
+    "provider": "openai",
+    "model": "gemini-web",
+    "apiBase": "http://127.0.0.1:8787/v1",
+    "apiKey": "noop"
+  }]
+}
+```
+
+### Cline / Roo Code (VS Code)
+
+In extension settings, add an OpenAI-compatible provider:
+- **Base URL**: `http://127.0.0.1:8787/v1`
+- **API Key**: any value
+- **Model ID**: `gemini-web`
+
+### Claude Desktop (MCP)
+
+`~/.claude/servers.json` or Claude Desktop settings → Developer → Edit Config:
+```json
+{
+  "mcpServers": {
+    "gemini-bridge": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/GeminiBridge"]
+    }
+  }
+}
+```
+
+### Aider
+
+`~/.aider.conf.yml` or `aider --openai-api-base http://127.0.0.1:8787/v1 --model gemini-web`
+
+### Cursor
+
+Settings → Models → Add Model:
+- **Provider**: OpenAI
+- **Base URL**: `http://127.0.0.1:8787/v1`
+- **Model**: `gemini-web`
+- **API Key**: any value
+
+### Windsurf
+
+`~/.codeium/windsurf.json` or Settings → Models → Custom Provider:
+- **Base URL**: `http://127.0.0.1:8787/v1`
+- **Model**: `gemini-web`
+
+### Any OpenAI-compatible client
+
+```
+OPENAI_BASE_URL=http://127.0.0.1:8787/v1
+OPENAI_API_KEY=noop
+OPENAI_MODEL=gemini-web
+```
+
+## API endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /v1/models` | Lists available models |
+| `POST /v1/chat/completions` | Chat completion (stream + non-stream) |
+| `GET /healthz` | Health check |
+| `GET /v1/debug/screenshot` | Browser screenshot |
+| `GET /v1/debug/history` | Dump chat history |
+
+## Auto-start with OpenCode
+
+Add to `opencode.json`:
+```json
+{
+  "hooks": {
+    "startup": "dotnet run --project /path/to/GeminiBridge"
+  }
+}
+```
+
+Or use a systemd user service for any agent.
