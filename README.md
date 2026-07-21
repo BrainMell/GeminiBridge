@@ -131,9 +131,13 @@ OPENAI_MODEL=gemini-web
 | `GET /v1/debug/screenshot` | Browser screenshot |
 | `GET /v1/debug/history` | Dump chat history |
 
-## Auto-start with OpenCode
+## Auto-starting GeminiBridge when the agent starts
 
-Add to `opencode.json`:
+Each agent has its own way to run a command at startup.
+
+### OpenCode
+
+`~/.config/opencode/opencode.json`:
 ```json
 {
   "hooks": {
@@ -142,4 +146,138 @@ Add to `opencode.json`:
 }
 ```
 
-Or use a systemd user service for any agent.
+### Claude Code
+
+`~/.claude.json`:
+```json
+{
+  "hooks": {
+    "postStartup": "dotnet run --project /path/to/GeminiBridge"
+  }
+}
+```
+
+Or via a `claude_prestart.sh` wrapper:
+```bash
+#!/usr/bin/env bash
+dotnet run --project /path/to/GeminiBridge -- --headless &
+claude "$@"
+```
+
+### Continue
+
+`~/.continue/config.json`:
+```json
+{
+  "experimental": {
+    "startupCommands": ["dotnet run --project /path/to/GeminiBridge"]
+  }
+}
+```
+
+### Cline / Roo Code
+
+Use a VS Code task in `.vscode/tasks.json`:
+```json
+{
+  "version": "2.0.0",
+  "tasks": [{
+    "label": "gemini-bridge",
+    "type": "shell",
+    "command": "dotnet run --project /path/to/GeminiBridge",
+    "isBackground": true,
+    "runOptions": { "runOn": "folderOpen" }
+  }]
+}
+```
+
+Or define GeminiBridge as an MCP server in Cline's `mcp_settings.json` — Cline auto-starts MCP servers on launch:
+```json
+{
+  "mcpServers": {
+    "gemini-bridge": {
+      "command": "dotnet",
+      "args": ["run", "--project", "/path/to/GeminiBridge"]
+    }
+  }
+}
+```
+
+### Cursor
+
+Use a Cursor launch task in `.cursor/tasks.json`:
+```json
+{
+  "tasks": [{
+    "label": "gemini-bridge",
+    "command": "dotnet run --project /path/to/GeminiBridge",
+    "runAt": "startup"
+  }]
+}
+```
+
+### Windsurf
+
+Add a pre-start script via `~/.codeium/windsurf.json`:
+```json
+{
+  "preStartCommands": ["dotnet run --project /path/to/GeminiBridge &"]
+}
+```
+
+### Aider
+
+Use a wrapper script `aider-gemini`:
+```bash
+#!/usr/bin/env bash
+dotnet run --project /path/to/GeminiBridge &
+sleep 3
+aider --openai-api-base http://127.0.0.1:8787/v1 --model gemini-web "$@"
+```
+
+### Generic (any agent)
+
+**systemd (Linux)** — survives agent restarts:
+```ini
+# ~/.config/systemd/user/gemini-bridge.service
+[Unit]
+Description=GeminiBridge
+
+[Service]
+ExecStart=dotnet run --project /path/to/GeminiBridge
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+```bash
+systemctl --user enable --now gemini-bridge
+```
+
+**launchd (macOS)**:
+```xml
+<!-- ~/Library/LaunchAgents/com.user.geminibridge.plist -->
+<plist>
+<dict>
+  <key>Label</key>  <string>com.user.geminibridge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/dotnet</string>
+    <string>run</string>
+    <string>--project</string>
+    <string>/path/to/GeminiBridge</string>
+  </array>
+  <key>RunAtLoad</key> <true/>
+  <key>KeepAlive</key>  <true/>
+</dict>
+</plist>
+```
+```bash
+launchctl load ~/Library/LaunchAgents/com.user.geminibridge.plist
+```
+
+**tmux** — start in a detached session from your shell rc:
+```bash
+# ~/.bashrc / ~/.zshrc
+tmux new-session -d -s gemini-bridge 'dotnet run --project /path/to/GeminiBridge' 2>/dev/null
+```
